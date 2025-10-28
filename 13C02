@@ -1,0 +1,42 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+#define PIN_SERVO 10
+
+Servo sv;
+
+void setup() {
+  sv.attach(PIN_SERVO);
+
+  float startAngle = 0.0;
+  float targetAngle = 180.0;
+  float speed = 3.0; // deg/s
+  float current = startAngle;
+
+  sv.write((int)current);
+  delay(500);
+
+  unsigned long lastMs = millis();
+
+  while (true) {
+    unsigned long now = millis();
+    float dt = (now - lastMs) / 1000.0;
+    lastMs = now;
+
+    current += speed * dt;
+
+    if (current >= targetAngle) {
+      current = targetAngle;
+    }
+
+    sv.write((int)round(current));
+
+    if (current >= targetAngle) break;
+
+    delay(5);
+  }
+}
+
+void loop() {
+}
+
