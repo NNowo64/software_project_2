@@ -1,0 +1,139 @@
+#include <Arduino.h>
+
+#define PIN_IR A0
+
+const int NUM_PTS = 7;
+double D_MM[NUM_PTS] = {0, 50, 100, 150, 200, 250, 300};
+double X_ADC[NUM_PTS];
+
+int N_SAMPLES = 25;
+int REP_READS = 8;
+double POS = 0.5;
+int DEG = 2;
+
+int ucmp(const void* a, const void* b){ return (*(unsigned int*)a - *(unsigned int*)b); }
+
+unsigned int ir_sensor_filtered(unsigned int n, double position){
+  if(n < 5) n = 5;
+  if(position <= 0) position = 0.0;
+  if(position >= 1.0) position = 0.999;
+  analogRead(PIN_IR);
+  delayMicroseconds(500);
+  unsigned int* buf = (unsigned int*)malloc(sizeof(unsigned int)*n);
+  if(!buf) return 0;
+  for(int i=0;i<n;i++){
+    buf[i] = analogRead(PIN_IR);
+    delayMicroseconds(900);
+  }
+  qsort(buf, n, sizeof(unsigned int), ucmp);
+  unsigned int v = buf[(unsigned int)(n*position)];
+  free(buf);
+  return v;
+}
+
+unsigned int robust_read(){
+  unsigned long acc = 0;
+  for(int i=0;i<REP_READS;i++) acc += ir_sensor_filtered(N_SAMPLES, POS);
+  return (unsigned int)(acc / REP_READS);
+}
+
+bool solveLinear(int n, double A[6][6], double b[6], double x[6]){
+  for(int i=0;i<n;i++){
+    int piv = i;
+    for(int r=i+1;r<n;r++) if(fabs(A[r][i]) > fabs(A[piv][i])) piv = r;
+    if(fabs(A[piv][i]) < 1e-12) return false;
+    if(piv != i){
+      for(int c=i;c<n;c++) { double tmp=A[i][c]; A[i][c]=A[piv][c]; A[piv][c]=tmp; }
+      double tb=b[i]; b[i]=b[piv]; b[piv]=tb;
+    }
+    double div = A[i][i];
+    for(int c=i;c<n;c++) A[i][c] /= div;
+    b[i] /= div;
+    for(int r=0;r<n;r++){
+      if(r==i) continue;
+      double f = A[r][i];
+      for(int c=i;c<n;c++) A[r][c] -= f*A[i][c];
+      b[r] -= f*b[i];
+    }
+  }
+  for(int i=0;i<n;i++) x[i] = b[i];
+  return true;
+}
+
+bool polyfit(const double* x, const double* y, int m, int deg, double* coef){
+  double S[11] = {0};
+  for(int k=0;k<=2*deg;k++){
+    double s=0;
+    for(int i=0;i<m;i++) s += pow(x[i], k);
+    S[k]=s;
+  }
+  double T[6]={0};
+  for(int k=0;k<=deg;k++){
+    double s=0;
+    for(int i=0;i<m;i++) s += y[i]*pow(x[i], k);
+    T[k]=s;
+  }
+  double A[6][6]={{0}};
+  double b[6]={0};
+  for(int r=0;r<=deg;r++){
+    for(int c=0;c<=deg;c++) A[r][c]=S[r+c];
+    b[r]=T[r];
+  }
+  return solveLinear(deg+1, A, b, coef);
+}
+
+void printEquation(const double* c, int deg){
+  Serial.println();
+  Serial.println("---- Fitted Equation (x=ADC, Distance in mm) ----");
+  Serial.print("Distance(x) = ");
+  for(int i=deg;i>=0;i--){
+    if(i!=deg){ Serial.print(c[i]>=0 ? " + " : " - "); }
+    else if(c[i] < 0){ Serial.print("-"); }
+    Serial.print(fabs(c[i]), 10);
+    if(i>=1){ Serial.print("*x"); if(i>=2){ Serial.print("^"); Serial.print(i); } }
+  }
+  Serial.println();
+  Serial.println();
+  Serial.println("float volt_to_distance(unsigned int x){");
+  Serial.print("  return ");
+  for(int i=deg;i>=0;i--){
+    if(i!=deg){ Serial.print(c[i]>=0 ? " + " : " - "); }
+    else if(c[i] < 0){ Serial.print("-"); }
+    Serial.print(fabs(c[i]), 10);
+    if(i>=1){ Serial.print("*pow((float)x,"); Serial.print(i); Serial.print(")"); }
+  }
+  Serial.println(";");
+  Serial.println("}");
+  Serial.println();
+  Serial.println("[Check]");
+  for(int i=0;i<NUM_PTS;i++){
+    double x = X_ADC[i];
+    double pred = 0;
+    for(int k=0;k<=deg;k++) pred += c[k]*pow(x, k);
+    double err = pred - D_MM[i];
+    Serial.print("ADC="); Serial.print((int)x);
+    Serial.print(" pred="); Serial.print(pred,3);
+    Serial.print(" true="); Serial.print(D_MM[i],3);
+    Serial.print(" err(mm)="); Serial.println(err,3);
+  }
+}
+
+void setup(){
+  Serial.begin(1000000);
+  pinMode(PIN_IR, INPUT);
+  for(int i=0;i<NUM_PTS;i++){
+    Serial.print("Place at "); Serial.print(D_MM[i],0); Serial.println(" mm, press Enter");
+    while(Serial.available()==0) ;
+    while(Serial.available()) Serial.read();
+    unsigned int v = robust_read();
+    X_ADC[i] = (double)v;
+    Serial.print("ADC="); Serial.println(v);
+  }
+  double coef[5]={0};
+  bool ok = polyfit(X_ADC, D_MM, NUM_PTS, DEG, coef);
+  if(!ok){ Serial.println("Fitting failed"); return; }
+  printEquation(coef, DEG);
+  Serial.println("Done");
+}
+
+void loop(){}
